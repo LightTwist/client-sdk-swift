@@ -17,9 +17,9 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(name: "SwiftProtobuf", url: "https://github.com/apple/swift-protobuf.git", .upToNextMajor(from: "1.18.0")),
+        .package(name: "SwiftProtobuf", url: "https://github.com/apple/swift-protobuf.git", .upToNextMajor(from: "1.20.2")),
         .package(name: "Promises", url: "https://github.com/google/promises.git", .upToNextMajor(from: "2.0.0")),
-        .package(url: "https://github.com/apple/swift-log.git", .upToNextMajor(from: "1.4.2"))
+        .package(url: "https://github.com/apple/swift-log.git", .upToNextMajor(from: "1.4.4"))
     ],
     targets: [
         .binaryTarget(name: "WebRTC", path: "WebRTC.xcframework"),

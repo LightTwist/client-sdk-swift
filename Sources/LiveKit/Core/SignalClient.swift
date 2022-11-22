@@ -15,10 +15,12 @@
  */
 
 import Foundation
-import Promises
 import WebRTC
+import Promises
 
 internal class SignalClient: MulticastDelegate<SignalClientDelegate> {
+
+    private let queue = DispatchQueue(label: "LiveKitSDK.signalClient", qos: .default)
 
     // MARK: - Public
 
@@ -76,7 +78,7 @@ internal class SignalClient: MulticastDelegate<SignalClientDelegate> {
         log()
     }
 
-    func connect(_ url: String,
+    func connect(_ urlString: String,
                  _ token: String,
                  connectOptions: ConnectOptions? = nil,
                  reconnectMode: ReconnectMode? = nil,
@@ -86,43 +88,48 @@ internal class SignalClient: MulticastDelegate<SignalClientDelegate> {
 
         log("reconnectMode: \(String(describing: reconnectMode))")
 
-        return Utils.buildUrl(url,
-                              token,
-                              connectOptions: connectOptions,
-                              reconnectMode: reconnectMode,
-                              adaptiveStream: adaptiveStream)
-            .catch(on: .sdk) { error in
-                self.log("Failed to parse rtc url", .error)
-            }
-            .then(on: .sdk) { url -> Promise<WebSocket> in
-                self.log("Connecting with url: \(url)")
-                self._state.mutate {
-                    $0.reconnectMode = reconnectMode
-                    $0.connectionState = .connecting
-                }
-                return WebSocket.connect(url: url,
-                                         onMessage: self.onWebSocketMessage,
-                                         onDisconnect: { reason in
-                                            self.webSocket = nil
-                                            self.cleanUp(reason: reason)
-                                         })
-            }.then(on: .sdk) { (webSocket: WebSocket) -> Void in
+        guard let url = Utils.buildUrl(urlString,
+                                       token,
+                                       connectOptions: connectOptions,
+                                       reconnectMode: reconnectMode,
+                                       adaptiveStream: adaptiveStream) else {
+
+            return Promise(InternalError.parse(message: "Failed to parse url"))
+        }
+
+        log("Connecting with url: \(urlString)")
+
+        self._state.mutate {
+            $0.reconnectMode = reconnectMode
+            $0.connectionState = .connecting
+        }
+
+        return WebSocket.connect(url: url,
+                                 onMessage: self.onWebSocketMessage,
+                                 onDisconnect: { reason in
+                                    self.webSocket = nil
+                                    self.cleanUp(reason: reason)
+                                 })
+            .then(on: queue) { (webSocket: WebSocket) -> Void in
                 self.webSocket = webSocket
                 self._state.mutate { $0.connectionState = .connected }
-            }.recover(on: .sdk) { error -> Promise<Void> in
+            }.recover(on: queue) { error -> Promise<Void> in
                 // Skip validation if reconnect mode
                 if reconnectMode != nil { throw error }
                 // Catch first, then throw again after getting validation response
                 // Re-build url with validate mode
-                return Utils.buildUrl(url,
-                                      token,
-                                      connectOptions: connectOptions,
-                                      adaptiveStream: adaptiveStream,
-                                      validate: true
-                ).then(on: .sdk) { url -> Promise<Data> in
-                    self.log("Validating with url: \(url)")
-                    return HTTP().get(url: url)
-                }.then(on: .sdk) { data in
+                guard let validateUrl = Utils.buildUrl(urlString,
+                                                       token,
+                                                       connectOptions: connectOptions,
+                                                       adaptiveStream: adaptiveStream,
+                                                       validate: true) else {
+
+                    return Promise(InternalError.parse(message: "Failed to parse validation url"))
+                }
+
+                self.log("Validating with url: \(validateUrl)")
+
+                return HTTP().get(on: self.queue, url: validateUrl).then(on: self.queue) { data in
                     guard let string = String(data: data, encoding: .utf8) else {
                         throw SignalClientError.connect(message: "Failed to decode string")
                     }
@@ -130,7 +137,7 @@ internal class SignalClient: MulticastDelegate<SignalClientDelegate> {
                     // re-throw with validation response
                     throw SignalClientError.connect(message: string)
                 }
-            }.catch(on: .sdk) { error in
+            }.catch(on: queue) { error in
                 self.cleanUp(reason: .networkError(error))
             }
     }
@@ -194,7 +201,7 @@ internal class SignalClient: MulticastDelegate<SignalClientDelegate> {
                 state.completersForAddTrack[trackCid] = Completer<Livekit_TrackInfo>()
             }
 
-            return state.completersForAddTrack[trackCid]!.wait(on: .sdk,
+            return state.completersForAddTrack[trackCid]!.wait(on: queue,
                                                                .defaultPublish,
                                                                throw: { EngineError.timedOut(message: "server didn't respond to addTrack request") })
         }
@@ -208,15 +215,15 @@ private extension SignalClient {
     // send request or enqueue while reconnecting
     func sendRequest(_ request: Livekit_SignalRequest, enqueueIfReconnecting: Bool = true) -> Promise<Void> {
 
-        Promise<Void>(on: requestDispatchQueue) { [weak self] () -> Void in
+        Promise<Void>(on: requestDispatchQueue) { [weak self] () -> Promise<Void> in
 
-            guard let self = self else { return }
+            guard let self = self else { return Promise(()) }
 
             guard !(self._state.connectionState.isReconnecting && request.canEnqueue() && enqueueIfReconnecting) else {
                 self.log("queuing request while reconnecting, request: \(request)")
                 self.requestQueue.append(request)
                 // success
-                return
+                return Promise(())
             }
 
             guard case .connected = self.connectionState else {
@@ -235,8 +242,7 @@ private extension SignalClient {
                 throw InternalError.convert(message: "Could not serialize data")
             }
 
-            // resolve promise in this queue
-            try awaitPromise(webSocket.send(data: data))
+            return webSocket.send(data: data)
         }
     }
 
@@ -278,7 +284,7 @@ private extension SignalClient {
         }
 
         switch message {
-        case .join(let joinResponse) :
+        case .join(let joinResponse):
             responseQueueState = .suspended
             latestJoinResponse = joinResponse
             notify { $0.signalClient(self, didReceive: joinResponse) }
@@ -307,7 +313,7 @@ private extension SignalClient {
             // not required to be handled because we use completer pattern for this case
             notify(requiresHandle: false) { $0.signalClient(self, didPublish: trackPublished) }
 
-            self.log("[publish] resolving completer for cid: \(trackPublished.cid)")
+            log("[publish] resolving completer for cid: \(trackPublished.cid)")
             // complete
             completeCompleter(forAddTrackRequest: trackPublished.cid, trackInfo: trackPublished.track)
 
@@ -339,6 +345,8 @@ private extension SignalClient {
             notify { $0.signalClient(self, didUpdate: permissionUpdate) }
         case .refreshToken(let token):
             notify { $0.signalClient(self, didUpdate: token) }
+        case .pong(let r):
+            log("pong: \(r)")
         }
     }
 }
@@ -351,23 +359,25 @@ internal extension SignalClient {
 
         log()
 
-        return Promise<Void>(on: responseDispatchQueue) { () -> Void in
+        return Promise<Void>(on: responseDispatchQueue) { () -> Promise<Void> in
 
             defer { self.responseQueueState = .resumed }
 
             // quickly return if no queued requests
             guard !self.responseQueue.isEmpty else {
                 self.log("No queued response")
-                return
+                return Promise(())
             }
 
             // send requests in sequential order
-            let promises = self.responseQueue.reduce(into: Promise(())) { result, response in result.then(on: .sdk) { self.onSignalResponse(response) } }
+            let promises = self.responseQueue.reduce(into: Promise(())) { result, response in
+                result = result.then(on: self.queue) { self.onSignalResponse(response) }
+            }
+
             // clear the queue
             self.responseQueue = []
 
-            // resolve promise in this queue
-            try awaitPromise(promises)
+            return promises
         }
     }
 }
@@ -380,28 +390,28 @@ internal extension SignalClient {
 
         // create a promise that never throws so the send sequence can continue
         func safeSend(_ request: Livekit_SignalRequest) -> Promise<Void> {
-            sendRequest(request, enqueueIfReconnecting: false).recover(on: .sdk) { error in
+            sendRequest(request, enqueueIfReconnecting: false).recover(on: queue) { error in
                 self.log("Failed to send queued request, request: \(request) \(error)", .warning)
             }
         }
 
-        return Promise<Void>(on: requestDispatchQueue) { () -> Void in
+        return Promise<Void>(on: requestDispatchQueue) { () -> Promise<Void> in
 
             // quickly return if no queued requests
             guard !self.requestQueue.isEmpty else {
                 self.log("No queued requests")
-                return
+                return Promise(())
             }
 
             // send requests in sequential order
             let promises = self.requestQueue.reduce(into: Promise(())) { result, request in
-                result = result.then(on: .sdk) { safeSend(request) }
+                result = result.then(on: self.queue) { safeSend(request) }
             }
+
             // clear the queue
             self.requestQueue = []
 
-            // resolve promise in this queue
-            try awaitPromise(promises)
+            return promises
         }
     }
 
@@ -437,7 +447,7 @@ internal extension SignalClient {
                 }
             }
 
-        }.then(on: .sdk) {
+        }.then(on: queue) {
             self.sendRequest($0)
         }
     }
@@ -481,9 +491,9 @@ internal extension SignalClient {
 
             let completer = prepareCompleter(forAddTrackRequest: cid)
 
-            return sendRequest(request).then(on: .sdk) {
+            return sendRequest(request).then(on: queue) {
                 completer
-            }.then(on: .sdk) { trackInfo in
+            }.then(on: queue) { trackInfo in
                 AddTrackResult(result: populateResult, trackInfo: trackInfo)
             }
 
@@ -560,6 +570,7 @@ internal extension SignalClient {
     }
 
     func sendSyncState(answer: Livekit_SessionDescription,
+                       offer: Livekit_SessionDescription?,
                        subscription: Livekit_UpdateSubscription,
                        publishTracks: [Livekit_TrackPublishedResponse]? = nil,
                        dataChannels: [Livekit_DataChannelInfo]? = nil) -> Promise<Void> {
@@ -568,6 +579,9 @@ internal extension SignalClient {
         let r = Livekit_SignalRequest.with {
             $0.syncState = Livekit_SyncState.with {
                 $0.answer = answer
+                if let offer = offer {
+                    $0.offer = offer
+                }
                 $0.subscription = subscription
                 $0.publishTracks = publishTracks ?? []
                 $0.dataChannels = dataChannels ?? []

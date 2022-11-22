@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import Foundation
 import SwiftUI
 import WebRTC
 import Promises
@@ -83,17 +84,13 @@ open class ObservableRoom: ObservableObject, RoomDelegate, Loggable {
             self.cameraTrackState = .busy(isPublishing: !self.cameraTrackState.isPublished)
         }
 
-        localParticipant.setCamera(enabled: !cameraTrackState.isPublished).then(on: .sdk) { publication in
+        localParticipant.setCamera(enabled: !localParticipant.isCameraEnabled()).then(on: room.queue) { publication in
             DispatchQueue.main.async {
-                guard let publication = publication else {
-                    self.cameraTrackState = .notPublished()
-                    return
-                }
-
+                guard let publication = publication else { return }
                 self.cameraTrackState = .published(publication)
             }
             self.log("Successfully published camera")
-        }.catch(on: .sdk) { error in
+        }.catch(on: room.queue) { error in
             DispatchQueue.main.async {
                 self.cameraTrackState = .notPublished(error: error)
             }
@@ -117,16 +114,12 @@ open class ObservableRoom: ObservableObject, RoomDelegate, Loggable {
             self.screenShareTrackState = .busy(isPublishing: !self.screenShareTrackState.isPublished)
         }
 
-        localParticipant.setScreenShare(enabled: !screenShareTrackState.isPublished).then(on: .sdk) { publication in
+        localParticipant.setScreenShare(enabled: !localParticipant.isScreenShareEnabled()).then(on: room.queue) { publication in
             DispatchQueue.main.async {
-                guard let publication = publication else {
-                    self.screenShareTrackState = .notPublished()
-                    return
-                }
-
+                guard let publication = publication else { return }
                 self.screenShareTrackState = .published(publication)
             }
-        }.catch(on: .sdk) { error in
+        }.catch(on: room.queue) { error in
             DispatchQueue.main.async {
                 self.screenShareTrackState = .notPublished(error: error)
             }
@@ -149,17 +142,13 @@ open class ObservableRoom: ObservableObject, RoomDelegate, Loggable {
             self.microphoneTrackState = .busy(isPublishing: !self.microphoneTrackState.isPublished)
         }
 
-        localParticipant.setMicrophone(enabled: !microphoneTrackState.isPublished).then(on: .sdk) { publication in
+        localParticipant.setMicrophone(enabled: !localParticipant.isMicrophoneEnabled()).then(on: room.queue) { publication in
             DispatchQueue.main.async {
-                guard let publication = publication else {
-                    self.microphoneTrackState = .notPublished()
-                    return
-                }
-
+                guard let publication = publication else { return }
                 self.microphoneTrackState = .published(publication)
             }
             self.log("Successfully published microphone")
-        }.catch(on: .sdk) { error in
+        }.catch(on: room.queue) { error in
             DispatchQueue.main.async {
                 self.microphoneTrackState = .notPublished(error: error)
             }
@@ -199,14 +188,16 @@ open class ObservableRoom: ObservableObject, RoomDelegate, Loggable {
     open func room(_ room: Room, didFailToConnect error: Error) {}
     open func room(_ room: Room, didDisconnect error: Error?) {}
     open func room(_ room: Room, didUpdate speakers: [Participant]) {}
-    open func room(_ room: Room, participant: Participant, didUpdate publication: TrackPublication, muted: Bool) {}
-    open func room(_ room: Room, participant: RemoteParticipant, didUpdate publication: RemoteTrackPublication, streamState: StreamState) {}
+    open func room(_ room: Room, didUpdate metadata: String?) {}
     open func room(_ room: Room, participant: Participant, didUpdate connectionQuality: ConnectionQuality) {}
+    open func room(_ room: Room, participant: Participant, didUpdate publication: TrackPublication, muted: Bool) {}
+    open func room(_ room: Room, participant: Participant, didUpdate permissions: ParticipantPermissions) {}
+    open func room(_ room: Room, participant: RemoteParticipant, didUpdate publication: RemoteTrackPublication, streamState: StreamState) {}
     open func room(_ room: Room, participant: RemoteParticipant, didPublish publication: RemoteTrackPublication) {}
     open func room(_ room: Room, participant: RemoteParticipant, didUnpublish publication: RemoteTrackPublication) {}
     open func room(_ room: Room, participant: RemoteParticipant, didSubscribe publication: RemoteTrackPublication, track: Track) {}
     open func room(_ room: Room, participant: RemoteParticipant, didFailToSubscribe trackSid: String, error: Error) {}
-    open func room(_ room: Room, participant: RemoteParticipant, didUnsubscribe publication: RemoteTrackPublication) {}
+    open func room(_ room: Room, participant: RemoteParticipant, didUnsubscribe publication: RemoteTrackPublication, track: Track) {}
     open func room(_ room: Room, participant: RemoteParticipant?, didReceive data: Data) {}
     open func room(_ room: Room, localParticipant: LocalParticipant, didPublish publication: LocalTrackPublication) {}
     open func room(_ room: Room, localParticipant: LocalParticipant, didUnpublish publication: LocalTrackPublication) {}

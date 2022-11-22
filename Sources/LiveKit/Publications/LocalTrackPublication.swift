@@ -17,6 +17,7 @@
 import Foundation
 import Promises
 
+@objc
 public class LocalTrackPublication: TrackPublication {
 
     // indicates whether the track was suspended(muted) by the SDK
@@ -35,7 +36,7 @@ public class LocalTrackPublication: TrackPublication {
             return Promise(InternalError.state(message: "track is nil or not a LocalTrack"))
         }
 
-        return track.mute()
+        return track._mute()
     }
 
     @discardableResult
@@ -45,10 +46,10 @@ public class LocalTrackPublication: TrackPublication {
             return Promise(InternalError.state(message: "track is nil or not a LocalTrack"))
         }
 
-        return track.unmute()
+        return track._unmute()
     }
 
-    override func set(track newValue: Track?) -> Track? {
+    internal override func set(track newValue: Track?) -> Track? {
         let oldValue = super.set(track: newValue)
 
         // listen for VideoCapturerDelegate
@@ -69,11 +70,13 @@ public class LocalTrackPublication: TrackPublication {
     }
 
     // create debounce func
-    lazy var shouldRecomputeSenderParameters = Utils.createDebounceFunc(wait: 0.1, onCreateWorkItem: { [weak self] workItem in
-        self?.debounceWorkItem = workItem
-    }, fnc: { [weak self] in
-        self?.recomputeSenderParameters()
-    })
+    lazy var shouldRecomputeSenderParameters = Utils.createDebounceFunc(on: queue,
+                                                                        wait: 0.1,
+                                                                        onCreateWorkItem: { [weak self] workItem in
+                                                                            self?.debounceWorkItem = workItem
+                                                                        }, fnc: { [weak self] in
+                                                                            self?.recomputeSenderParameters()
+                                                                        })
 }
 
 internal extension LocalTrackPublication {
@@ -82,7 +85,7 @@ internal extension LocalTrackPublication {
     func suspend() -> Promise<Void> {
         // do nothing if already muted
         guard !muted else { return Promise(()) }
-        return mute().then(on: .sdk) {
+        return mute().then(on: queue) {
             self.suspended = true
         }
     }
@@ -91,7 +94,7 @@ internal extension LocalTrackPublication {
     func resume() -> Promise<Void> {
         // do nothing if was not suspended
         guard suspended else { return Promise(()) }
-        return unmute().then(on: .sdk) {
+        return unmute().then(on: queue) {
             self.suspended = false
         }
     }
@@ -126,7 +129,7 @@ extension LocalTrackPublication {
         // get current parameters
         let parameters = sender.parameters
 
-        let publishOptions = (track.publishOptions as? VideoPublishOptions) ?? participant.room.options.defaultVideoPublishOptions
+        let publishOptions = (track.publishOptions as? VideoPublishOptions) ?? participant.room._state.options.defaultVideoPublishOptions
 
         // re-compute encodings
         let encodings = Utils.computeEncodings(dimensions: dimensions,
@@ -163,7 +166,7 @@ extension LocalTrackPublication {
         self.log("Using encodings layers: \(layers.map { String(describing: $0) }.joined(separator: ", "))")
 
         participant.room.engine.signalClient.sendUpdateVideoLayers(trackSid: track.sid!,
-                                                                   layers: layers).catch(on: .sdk) { error in
+                                                                   layers: layers).catch(on: queue) { _ in
                                                                     self.log("Failed to send update video layers", .error)
                                                                    }
     }

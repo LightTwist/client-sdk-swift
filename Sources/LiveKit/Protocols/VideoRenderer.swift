@@ -18,10 +18,13 @@ import Foundation
 import WebRTC
 
 @objc
-public protocol AudioTrack where Self: Track {
-
-}
-
-extension AudioTrack {
-
+public protocol VideoRenderer: RTCVideoRenderer {
+    /// Whether this ``VideoRenderer`` should be considered visible or not for AdaptiveStream.
+    /// This will be invoked on the .main thread.
+    @objc
+    var adaptiveStreamIsEnabled: Bool { get }
+    /// The size used for AdaptiveStream computation. Return .zero if size is unknown yet.
+    /// This will be invoked on the .main thread.
+    @objc
+    var adaptiveStreamSize: CGSize { get }
 }

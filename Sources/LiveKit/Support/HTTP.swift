@@ -27,15 +27,15 @@ internal class HTTP: NSObject, URLSessionDelegate {
                    delegateQueue: operationQueue)
     }()
 
-    func get(url: URL) -> Promise<Data> {
+    func get(on: DispatchQueue, url: URL) -> Promise<Data> {
 
-        Promise<Data>(on: .sdk) { resolve, fail in
+        Promise<Data>(on: on) { resolve, fail in
 
             let request = URLRequest(url: url,
                                      cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
                                      timeoutInterval: .defaultHTTPConnect)
 
-            let task = self.session.dataTask(with: request) { data, response, error in
+            let task = self.session.dataTask(with: request) { data, _, error in
                 if let error = error {
                     fail(error)
                     return

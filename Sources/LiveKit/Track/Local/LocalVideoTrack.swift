@@ -17,11 +17,14 @@
 import Foundation
 import WebRTC
 import Promises
-import ReplayKit
 
-public class LocalVideoTrack: LocalTrack, VideoTrack {
+@objc
+public class LocalVideoTrack: Track, LocalTrack, VideoTrack {
 
+    @objc
     public internal(set) var capturer: VideoCapturer
+
+    @objc
     public internal(set) var videoSource: RTCVideoSource
 
     internal init(name: String,
@@ -42,25 +45,26 @@ public class LocalVideoTrack: LocalTrack, VideoTrack {
     }
 
     override public func start() -> Promise<Bool> {
-        super.start().then(on: .sdk) { didStart in
-            self.capturer.startCapture().then(on: .sdk) { _ in didStart }
+        super.start().then(on: queue) { didStart in
+            self.capturer.startCapture().then(on: self.queue) { _ in didStart }
         }
     }
 
     override public func stop() -> Promise<Bool> {
-        super.stop().then(on: .sdk) { didStop in
-            self.capturer.stopCapture().then(on: .sdk) { _ in didStop }
+        super.stop().then(on: queue) { didStop in
+            self.capturer.stopCapture().then(on: self.queue) { _ in didStop }
         }
     }
 }
 
-extension RTCRtpEncodingParameters {
-    open override var description: String {
-        return "RTCRtpEncodingParameters(rid: \(rid ?? "nil"), "
-            + "active: \(isActive), "
-            + "scaleResolutionDownBy: \(String(describing: scaleResolutionDownBy)), "
-            + "maxBitrateBps: \(maxBitrateBps == nil ? "nil" : String(describing: maxBitrateBps)), "
-            + "maxFramerate: \(maxFramerate == nil ? "nil" : String(describing: maxFramerate)))"
+extension LocalVideoTrack {
+
+    public func add(videoRenderer: VideoRenderer) {
+        super._add(videoRenderer: videoRenderer)
+    }
+
+    public func remove(videoRenderer: VideoRenderer) {
+        super._remove(videoRenderer: videoRenderer)
     }
 }
 
@@ -76,4 +80,11 @@ extension LocalVideoTrack {
         capturer.options = options
         return capturer.restartCapture()
     }
+}
+
+extension LocalVideoTrack {
+
+    public var publishOptions: PublishOptions? { super._publishOptions }
+
+    public var publishState: Track.PublishState { super._publishState }
 }

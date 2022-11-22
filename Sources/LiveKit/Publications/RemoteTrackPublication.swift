@@ -16,15 +16,17 @@
 
 import Foundation
 import CoreGraphics
-import Promises
 import WebRTC
+import Promises
 
-public enum SubscriptionState {
+@objc
+public enum SubscriptionState: Int, Codable {
     case subscribed
     case notAllowed
     case unsubscribed
 }
 
+@objc
 public class RemoteTrackPublication: TrackPublication {
 
     public var subscriptionAllowed: Bool { _state.subscriptionAllowed }
@@ -41,7 +43,7 @@ public class RemoteTrackPublication: TrackPublication {
     // this must be on .main queue
     private var asTimer = DispatchQueueTimer(timeInterval: 0.3, queue: .main)
 
-    override internal init(info: Livekit_TrackInfo,
+    internal override init(info: Livekit_TrackInfo,
                            track: Track? = nil,
                            participant: Participant) {
 
@@ -62,7 +64,7 @@ public class RemoteTrackPublication: TrackPublication {
         set(metadataMuted: info.muted)
     }
 
-    override public var subscribed: Bool {
+    public override var subscribed: Bool {
         if !subscriptionAllowed { return false }
         return preferSubscribed != false && super.subscribed
     }
@@ -87,7 +89,7 @@ public class RemoteTrackPublication: TrackPublication {
             participantSid: participant.sid,
             trackSid: sid,
             subscribed: newValue
-        ).then(on: .sdk) {
+        ).then(on: queue) {
             self.preferSubscribed = newValue
         }
     }
@@ -107,7 +109,7 @@ public class RemoteTrackPublication: TrackPublication {
         // update state
         _state.mutate { $0.trackSettings = $0.trackSettings.copyWith(enabled: newValue) }
         // attempt to set the new settings
-        return send(trackSettings: _state.trackSettings).catch(on: .sdk) { [weak self] error in
+        return send(trackSettings: _state.trackSettings).catch(on: queue) { [weak self] error in
 
             guard let self = self else { return }
 
@@ -148,10 +150,10 @@ public class RemoteTrackPublication: TrackPublication {
 
             if let oldValue = oldValue, newValue == nil, let participant = participant as? RemoteParticipant {
                 participant.notify(label: { "participant.didUnsubscribe \(self)" }) {
-                    $0.participant(participant, didUnsubscribe: self, track: oldValue)
+                    $0.participant?(participant, didUnsubscribe: self, track: oldValue)
                 }
                 participant.room.notify(label: { "room.didUnsubscribe \(self)" }) {
-                    $0.room(participant.room, participant: participant, didUnsubscribe: self, track: oldValue)
+                    $0.room?(participant.room, participant: participant, didUnsubscribe: self, track: oldValue)
                 }
             }
         }
@@ -164,7 +166,7 @@ public class RemoteTrackPublication: TrackPublication {
 
 private extension RemoteTrackPublication {
 
-    var isAdaptiveStreamEnabled: Bool { (participant?.room.options ?? RoomOptions()).adaptiveStream && .video == kind }
+    var isAdaptiveStreamEnabled: Bool { (participant?.room._state.options ?? RoomOptions()).adaptiveStream && .video == kind }
 
     var engineConnectionState: ConnectionState {
 
@@ -199,10 +201,10 @@ internal extension RemoteTrackPublication {
         // if track exists, track will emit the following events
         if track == nil {
             participant.notify(label: { "participant.didUpdate muted: \(newValue)" }) {
-                $0.participant(participant, didUpdate: self, muted: newValue)
+                $0.participant?(participant, didUpdate: self, muted: newValue)
             }
             participant.room.notify(label: { "room.didUpdate muted: \(newValue)" }) {
-                $0.room(participant.room, participant: participant, didUpdate: self, muted: newValue)
+                $0.room?(participant.room, participant: participant, didUpdate: self, muted: newValue)
             }
         }
     }
@@ -213,10 +215,10 @@ internal extension RemoteTrackPublication {
 
         guard let participant = self.participant as? RemoteParticipant else { return }
         participant.notify(label: { "participant.didUpdate permission: \(newValue)" }) {
-            $0.participant(participant, didUpdate: self, permission: newValue)
+            $0.participant?(participant, didUpdate: self, permission: newValue)
         }
         participant.room.notify(label: { "room.didUpdate permission: \(newValue)" }) {
-            $0.room(participant.room, participant: participant, didUpdate: self, permission: newValue)
+            $0.room?(participant.room, participant: participant, didUpdate: self, permission: newValue)
         }
     }
 }
@@ -247,13 +249,13 @@ internal extension RemoteTrackPublication {
 
 // MARK: - Adaptive Stream
 
-internal extension Collection where Element == VideoView {
+internal extension Collection where Element == VideoRenderer {
 
-    func hasVisible() -> Bool {
+    func containsOneOrMoreAdaptiveStreamEnabledRenderers() -> Bool {
         // not visible if no entry
         if isEmpty { return false }
         // at least 1 entry should be visible
-        return contains { $0.isVisible }
+        return contains { $0.adaptiveStreamIsEnabled }
     }
 
     func largestSize() -> CGSize? {
@@ -265,13 +267,15 @@ internal extension Collection where Element == VideoView {
 
         // use post-layout nativeRenderer's view size otherwise return nil
         // which results lower layer to be requested (enabled: true, dimensions: 0x0)
-        return filter { $0.isVisible }.compactMap { $0._state.rendererSize }.reduce(into: nil as CGSize?, { previous, current in
-            guard let unwrappedPrevious = previous else {
-                previous = current
-                return
-            }
-            previous = maxCGSize(unwrappedPrevious, current)
-        })
+        return filter { $0.adaptiveStreamIsEnabled }
+            .compactMap { $0.adaptiveStreamSize != .zero ? $0.adaptiveStreamSize : nil }
+            .reduce(into: nil as CGSize?, { previous, current in
+                guard let unwrappedPrevious = previous else {
+                    previous = current
+                    return
+                }
+                previous = maxCGSize(unwrappedPrevious, current)
+            })
     }
 }
 
@@ -292,13 +296,12 @@ extension RemoteTrackPublication {
             return
         }
 
-        let asViews = track?.videoViews.allObjects ?? []
-
-        let enabled = asViews.hasVisible()
+        let videoRenderers = track?.videoRenderers.allObjects ?? []
+        let enabled = videoRenderers.containsOneOrMoreAdaptiveStreamEnabledRenderers()
         var dimensions: Dimensions = .zero
 
         // compute the largest video view size
-        if enabled, let maxSize = asViews.largestSize() {
+        if enabled, let maxSize = videoRenderers.largestSize() {
             dimensions = Dimensions(width: Int32(ceil(maxSize.width)),
                                     height: Int32(ceil(maxSize.height)))
         }
@@ -318,8 +321,8 @@ extension RemoteTrackPublication {
 
         // log when flipping from enabled -> disabled
         if oldSettings.enabled, !newSettings.enabled {
-            let viewsString = asViews.enumerated().map { (i, view) in "view\(i).isVisible: \(view.isVisible)(didLayout: \(view._state.didLayout), isHidden: \(view._state.isHidden), isEnabled: \(view._state.isEnabled))" }.joined(separator: ", ")
-            log("[adaptiveStream] disabling sid: \(sid), viewCount: \(asViews.count), \(viewsString)")
+            let viewsString = videoRenderers.enumerated().map { (i, v) in "videoRenderer\(i)(adaptiveStreamIsEnabled: \(v.adaptiveStreamIsEnabled), adaptiveStreamSize: \(v.adaptiveStreamSize))" }.joined(separator: ", ")
+            log("[adaptiveStream] disabling sid: \(sid), videoRenderersCount: \(videoRenderers.count), \(viewsString)")
         }
 
         if let videoTrack = track?.mediaTrack as? RTCVideoTrack {
@@ -327,12 +330,12 @@ extension RemoteTrackPublication {
             DispatchQueue.webRTC.sync { videoTrack.shouldReceive = enabled }
         }
 
-        send(trackSettings: newSettings).catch(on: .sdk) { [weak self] error in
+        send(trackSettings: newSettings).catch(on: queue) { [weak self] error in
             guard let self = self else { return }
             // revert to old settings on failure
             self._state.mutate { $0.trackSettings = oldSettings }
             self.log("[adaptiveStream] failed to send trackSettings, sid: \(self.sid) error: \(error)", .error)
-        }.always(on: .sdk) { [weak self] in
+        }.always(on: queue) { [weak self] in
             guard let self = self else { return }
             self.asTimer.restart()
         }

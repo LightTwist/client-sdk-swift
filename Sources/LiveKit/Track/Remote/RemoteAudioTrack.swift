@@ -14,10 +14,24 @@
  * limitations under the License.
  */
 
+import Foundation
 import WebRTC
 import Promises
 
-class RemoteAudioTrack: RemoteTrack, AudioTrack {
+@objc
+public class RemoteAudioTrack: Track, RemoteTrack, AudioTrack {
+
+    /// Volume with range 0.0 - 1.0
+    public var volume: Double {
+        get {
+            guard let audioTrack = mediaTrack as? RTCAudioTrack else { return 0 }
+            return audioTrack.source.volume / 10
+        }
+        set {
+            guard let audioTrack = mediaTrack as? RTCAudioTrack else { return }
+            audioTrack.source.volume = newValue * 10
+        }
+    }
 
     init(name: String,
          source: Track.Source,
@@ -30,7 +44,7 @@ class RemoteAudioTrack: RemoteTrack, AudioTrack {
     }
 
     override public func start() -> Promise<Bool> {
-        super.start().then(on: .sdk) { didStart -> Bool in
+        super.start().then(on: queue) { didStart -> Bool in
             if didStart {
                 AudioManager.shared.trackDidStart(.remote)
             }
@@ -39,7 +53,7 @@ class RemoteAudioTrack: RemoteTrack, AudioTrack {
     }
 
     override public func stop() -> Promise<Bool> {
-        super.stop().then(on: .sdk) { didStop -> Bool in
+        super.stop().then(on: queue) { didStop -> Bool in
             if didStop {
                 AudioManager.shared.trackDidStop(.remote)
             }

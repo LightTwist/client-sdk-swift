@@ -14,40 +14,15 @@
  * limitations under the License.
  */
 
+import Foundation
 import WebRTC
 
-public protocol VideoTrack: Track {
+@objc
+public protocol VideoTrack where Self: Track {
 
-}
+    @objc(addVideoRenderer:)
+    func add(videoRenderer: VideoRenderer)
 
-extension VideoTrack {
-
-    public func add(videoView: VideoView) {
-
-        // must always be called on main thread
-        assert(Thread.current.isMainThread, "must be called on main thread")
-
-        guard let videoTrack = self.mediaTrack as? RTCVideoTrack else {
-            log("mediaTrack is not a RTCVideoTrack", .error)
-            return
-        }
-
-        videoTrack.add(videoView)
-        videoViews.add(videoView)
-    }
-
-    public func remove(videoView: VideoView) {
-
-        // must always be called on main thread
-        assert(Thread.current.isMainThread, "must be called on main thread")
-
-        videoViews.remove(videoView)
-
-        guard let videoTrack = self.mediaTrack as? RTCVideoTrack else {
-            log("mediaTrack is not a RTCVideoTrack", .error)
-            return
-        }
-
-        videoTrack.remove(videoView)
-    }
+    @objc(removeVideoRenderer:)
+    func remove(videoRenderer: VideoRenderer)
 }

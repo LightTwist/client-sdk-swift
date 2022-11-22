@@ -15,13 +15,15 @@
  */
 
 import Foundation
-import Promises
 import WebRTC
+import Promises
 import SwiftProtobuf
 
 internal typealias TransportOnOffer = (RTCSessionDescription) -> Promise<Void>
 
 internal class Transport: MulticastDelegate<TransportDelegate> {
+
+    private let queue = DispatchQueue(label: "LiveKitSDK.transport", qos: .default)
 
     // MARK: - Public
 
@@ -52,11 +54,13 @@ internal class Transport: MulticastDelegate<TransportDelegate> {
     }
 
     // create debounce func
-    public lazy var negotiate = Utils.createDebounceFunc(wait: 0.1, onCreateWorkItem: { [weak self] workItem in
-        self?.debounceWorkItem = workItem
-    }, fnc: { [weak self] in
-        self?.createAndSendOffer()
-    })
+    public lazy var negotiate = Utils.createDebounceFunc(on: queue,
+                                                         wait: 0.1,
+                                                         onCreateWorkItem: { [weak self] workItem in
+                                                            self?.debounceWorkItem = workItem
+                                                         }, fnc: { [weak self] in
+                                                            self?.createAndSendOffer()
+                                                         })
 
     // MARK: - Private
 
@@ -121,7 +125,7 @@ internal class Transport: MulticastDelegate<TransportDelegate> {
             return addIceCandidatePromise(candidate)
         }
 
-        return Promise(on: .sdk) {
+        return Promise(on: queue) {
             self.pendingCandidates.append(candidate)
         }
     }
@@ -129,9 +133,9 @@ internal class Transport: MulticastDelegate<TransportDelegate> {
     @discardableResult
     func setRemoteDescription(_ sd: RTCSessionDescription) -> Promise<Void> {
 
-        self.setRemoteDescriptionPromise(sd).then(on: .sdk) { _ in
-            self.pendingCandidates.map { self.addIceCandidatePromise($0) }.all(on: .sdk)
-        }.then(on: .sdk) { () -> Promise<Void> in
+        self.setRemoteDescriptionPromise(sd).then(on: queue) { _ in
+            self.pendingCandidates.map { self.addIceCandidatePromise($0) }.all(on: self.queue)
+        }.then(on: queue) { () -> Promise<Void> in
 
             self.pendingCandidates = []
             self.restartingIce = false
@@ -166,16 +170,16 @@ internal class Transport: MulticastDelegate<TransportDelegate> {
         }
 
         if signalingState == .haveLocalOffer, iceRestart, let sd = remoteDescription {
-            return setRemoteDescriptionPromise(sd).then(on: .sdk) { _ in
+            return setRemoteDescriptionPromise(sd).then(on: queue) { _ in
                 negotiateSequence()
             }
         }
 
         // actually negotiate
         func negotiateSequence() -> Promise<Void> {
-            createOffer(for: constraints).then(on: .sdk) { offer in
+            createOffer(for: constraints).then(on: queue) { offer in
                 self.setLocalDescription(offer)
-            }.then(on: .sdk) { offer in
+            }.then(on: queue) { offer in
                 onOffer(offer)
             }
         }
@@ -184,18 +188,26 @@ internal class Transport: MulticastDelegate<TransportDelegate> {
     }
 
     func close() -> Promise<Void> {
-        // prevent debounced negotiate firing
-        debounceWorkItem?.cancel()
-        statsTimer.suspend()
 
-        return Promise(on: .webRTC) { [pc] in
-            // Stop listening to delegate
-            pc.delegate = nil
-            // Remove all senders (if any)
-            for sender in pc.senders {
-                pc.removeTrack(sender)
+        Promise(on: queue) { [weak self] in
+
+            guard let self = self else { return }
+
+            // prevent debounced negotiate firing
+            self.debounceWorkItem?.cancel()
+            self.statsTimer.suspend()
+
+            // can be async
+            DispatchQueue.webRTC.async {
+                // Stop listening to delegate
+                self.pc.delegate = nil
+                // Remove all senders (if any)
+                for sender in self.pc.senders {
+                    self.pc.removeTrack(sender)
+                }
+
+                self.pc.close()
             }
-            pc.close()
         }
     }
 }
@@ -429,10 +441,9 @@ internal extension Transport {
 
     func dataChannel(for label: String,
                      configuration: RTCDataChannelConfiguration,
-                     delegate: RTCDataChannelDelegate) -> RTCDataChannel? {
+                     delegate: RTCDataChannelDelegate? = nil) -> RTCDataChannel? {
 
-        let result = DispatchQueue.webRTC.sync { pc.dataChannel(forLabel: label,
-                                                                configuration: configuration) }
+        let result = DispatchQueue.webRTC.sync { pc.dataChannel(forLabel: label, configuration: configuration) }
         result?.delegate = delegate
         return result
     }

@@ -15,9 +15,9 @@
  */
 
 import Foundation
-import Logging
-import Promises
 import WebRTC
+import Promises
+import Logging
 
 internal let logger = Logger(label: "LiveKitSDK")
 
@@ -31,9 +31,11 @@ internal let logger = Logger(label: "LiveKitSDK")
 ///
 /// Download the [Multiplatform SwiftUI Example](https://github.com/livekit/multiplatform-swiftui-example)
 /// to try out the features.
-public class LiveKit {
+@objc
+public class LiveKit: NSObject {
 
-    public static let version = "1.0.4"
+    @objc(sdkVersion)
+    public static let version = "1.0.7"
 
     @available(*, deprecated, message: "Use Room.connect() instead, protocol v8 and higher do not support this method")
     public static func connect(
@@ -49,5 +51,14 @@ public class LiveKit {
                         roomOptions: roomOptions)
 
         return room.connect(url, token)
+    }
+
+    @objc
+    public static func setLoggerStandardOutput() {
+        LoggingSystem.bootstrap({
+            var logHandler = StreamLogHandler.standardOutput(label: $0)
+            logHandler.logLevel = .debug
+            return logHandler
+        })
     }
 }

@@ -107,31 +107,9 @@ public class MulticastDelegate<T>: NSObject, Loggable {
             }
 
             let wasHandled = counter > 0
-            assert(!(requiresHandle && !wasHandled), "notify() was not handled by the delegate, called from \(function) line \(line)")
+            if !(requiresHandle && !wasHandled) {
+                self.log("notify() was not handled by the delegate, called from \(function) line \(line)", .warning)
+            }
         }
-    }
-}
-
-public protocol MulticastDelegateCapable {
-    associatedtype DelegateType
-    var delegates: MulticastDelegate<DelegateType> { get }
-    func add(delegate: DelegateType)
-    func remove(delegate: DelegateType)
-    func notify(label: (() -> String)?, _ fnc: @escaping (DelegateType) -> Void)
-}
-
-extension MulticastDelegateCapable {
-
-    public func add(delegate: DelegateType) {
-        delegates.add(delegate: delegate)
-    }
-
-    public func remove(delegate: DelegateType) {
-        delegates.remove(delegate: delegate)
-    }
-
-    public func notify(label: (() -> String)? = nil,
-                       _ fnc: @escaping (DelegateType) -> Void) {
-        delegates.notify(label: label, fnc)
     }
 }

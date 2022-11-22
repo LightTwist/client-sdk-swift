@@ -17,15 +17,21 @@
 import Foundation
 import WebRTC
 import Promises
+
+#if canImport(Network)
 import Network
+#endif
 
 internal class Engine: MulticastDelegate<EngineDelegate> {
+
+    internal let queue = DispatchQueue(label: "LiveKitSDK.engine", qos: .default)
 
     // MARK: - Public
 
     public typealias ConditionEvalFunc = (_ newState: State, _ oldState: State?) -> Bool
 
     public struct State: ReconnectableState {
+        var connectOptions: ConnectOptions
         var url: String?
         var token: String?
         // preferred reconnect mode which will be used only for next attempt
@@ -36,19 +42,14 @@ internal class Engine: MulticastDelegate<EngineDelegate> {
         var hasPublished: Bool = false
         var primaryTransportConnectedCompleter = Completer<Void>()
         var publisherTransportConnectedCompleter = Completer<Void>()
-        var publisherReliableDCOpenCompleter = Completer<Void>()
-        var publisherLossyDCOpenCompleter = Completer<Void>()
     }
 
-    public var _state = StateSync(State())
+    public var _state: StateSync<State>
 
     public let signalClient = SignalClient()
 
     public private(set) var publisher: Transport?
     public private(set) var subscriber: Transport?
-
-    public private(set) var connectOptions: ConnectOptions
-    public private(set) var roomOptions: RoomOptions
 
     // weak ref to Room
     public weak var room: Room?
@@ -64,21 +65,19 @@ internal class Engine: MulticastDelegate<EngineDelegate> {
     private var subscriberPrimary: Bool = false
     private var primary: Transport? { subscriberPrimary ? subscriber : publisher }
 
-    private var dcReliablePub: RTCDataChannel?
-    private var dcLossyPub: RTCDataChannel?
-    private var dcReliableSub: RTCDataChannel?
-    private var dcLossySub: RTCDataChannel?
+    // MARK: - DataChannels
+
+    private var subscriberDC = DataChannelPair(target: .subscriber)
+    private var publisherDC = DataChannelPair(target: .publisher)
 
     private var _blockProcessQueue = DispatchQueue(label: "LiveKitSDK.engine.pendingBlocks",
                                                    qos: .default)
 
     private var _queuedBlocks = [ConditionalExecutionEntry]()
 
-    init(connectOptions: ConnectOptions,
-         roomOptions: RoomOptions) {
+    init(connectOptions: ConnectOptions) {
 
-        self.connectOptions = connectOptions
-        self.roomOptions = roomOptions
+        self._state = StateSync(State(connectOptions: connectOptions))
         super.init()
 
         // log sdk & os versions
@@ -119,6 +118,17 @@ internal class Engine: MulticastDelegate<EngineDelegate> {
                 }
             }
         }
+
+        subscriberDC.onDataPacket = { [weak self] (dataPacket: Livekit_DataPacket) in
+
+            guard let self = self else { return }
+
+            switch dataPacket.value {
+            case .speaker(let update): self.notify { $0.engine(self, didUpdate: update.speakers) }
+            case .user(let userPacket): self.notify { $0.engine(self, didReceive: userPacket) }
+            default: return
+            }
+        }
     }
 
     deinit {
@@ -128,18 +138,18 @@ internal class Engine: MulticastDelegate<EngineDelegate> {
     // Connect sequence, resets existing state
     func connect(_ url: String,
                  _ token: String,
-                 connectOptions: ConnectOptions? = nil,
-                 roomOptions: RoomOptions? = nil) -> Promise<Void> {
+                 connectOptions: ConnectOptions? = nil) -> Promise<Void> {
 
         // update options if specified
-        self.connectOptions = connectOptions ?? self.connectOptions
-        self.roomOptions = roomOptions ?? self.roomOptions
+        if let connectOptions = connectOptions, connectOptions != _state.connectOptions {
+            _state.mutate { $0.connectOptions = connectOptions }
+        }
 
-        return cleanUp().then(on: .sdk) {
+        return cleanUp().then(on: queue) {
             self._state.mutate { $0.connectionState = .connecting }
-        }.then(on: .sdk) {
+        }.then(on: queue) {
             self.fullConnectSequence(url, token)
-        }.then(on: .sdk) {
+        }.then(on: queue) {
             // connect sequence successful
             self.log("Connect sequence completed")
 
@@ -150,7 +160,7 @@ internal class Engine: MulticastDelegate<EngineDelegate> {
                 $0.connectionState = .connected
             }
 
-        }.catch(on: .sdk) { error in
+        }.catch(on: queue) { error in
             self.cleanUp(reason: .networkError(error))
         }
     }
@@ -170,50 +180,55 @@ internal class Engine: MulticastDelegate<EngineDelegate> {
     // Resets state of transports
     func cleanUpRTC() -> Promise<Void> {
 
-        func closeAllDataChannels() -> Promise<Void> {
+        Promise<Void>(on: queue) { [weak self] () -> Promise<Void> in
 
-            let promises = [dcReliablePub, dcLossyPub, dcReliableSub, dcLossySub]
-                .compactMap { $0 }
-                .map { dc in Promise<Void>(on: .webRTC) { dc.close() } }
+            // close data channels
 
-            return promises.all(on: .sdk).then(on: .sdk) {
-                self.dcReliablePub = nil
-                self.dcLossyPub = nil
-                self.dcReliableSub = nil
-                self.dcLossySub = nil
-            }
-        }
+            guard let self = self else { return Promise(()) }
 
-        func closeAllTransports() -> Promise<Void> {
+            let closeDataChannelPromises = [
+                self.publisherDC.close(),
+                self.subscriberDC.close()
+            ]
 
-            let promises = [publisher, subscriber]
+            return closeDataChannelPromises.all(on: self.queue)
+
+        }.then(on: queue) { [weak self] () -> Promise<Void> in
+
+            // close transports
+
+            guard let self = self else { return Promise(()) }
+
+            let closeTransportPromises = [self.publisher,
+                                          self.subscriber]
                 .compactMap { $0 }
                 .map { $0.close() }
 
-            return promises.all(on: .sdk).then(on: .sdk) {
-                self.publisher = nil
-                self.subscriber = nil
-                self._state.mutate { $0.hasPublished = false }
-            }
-        }
+            return closeTransportPromises.all(on: self.queue)
 
-        return closeAllDataChannels()
-            .recover(on: .sdk) { self.log("Failed to close data channels, error: \($0)") }
-            .then(on: .sdk) {
-                closeAllTransports()
-            }
+        }.then(on: queue) { _ in
+            self.publisher = nil
+            self.subscriber = nil
+            self._state.mutate { $0.hasPublished = false }
+        }
     }
 
-    func publisherShouldNegotiate() {
+    @discardableResult
+    func publisherShouldNegotiate() -> Promise<Void> {
 
-        guard let publisher = publisher else {
-            log("negotiate() publisher is nil")
-            return
+        log()
+
+        return Promise<Void>(on: queue) { [weak self] in
+
+            guard let self = self,
+                  let publisher = self.publisher else {
+                throw EngineError.state(message: "self or publisher is nil")
+            }
+
+            self._state.mutate { $0.hasPublished = true }
+
+            publisher.negotiate()
         }
-
-        _state.mutate { $0.hasPublished = true }
-
-        publisher.negotiate()
     }
 
     func send(userPacket: Livekit_UserPacket,
@@ -233,35 +248,30 @@ internal class Engine: MulticastDelegate<EngineDelegate> {
                 publisherShouldNegotiate()
             }
 
-            let p1 = _state.mutate {
-                $0.publisherTransportConnectedCompleter.wait(on: .sdk, .defaultTransportState, throw: { TransportError.timedOut(message: "publisher didn't connect") })
+            let publisherConnectCompleter = _state.mutate {
+                $0.publisherTransportConnectedCompleter.wait(on: queue,
+                                                             .defaultTransportState,
+                                                             throw: { TransportError.timedOut(message: "publisher didn't connect") })
             }
 
-            let p2 = _state.mutate { state -> Promise<Void> in
-                var completer = reliability == .reliable ? state.publisherReliableDCOpenCompleter : state.publisherLossyDCOpenCompleter
-                return completer.wait(on: .sdk, .defaultPublisherDataChannelOpen, throw: { TransportError.timedOut(message: "publisher dc didn't open") })
+            return publisherConnectCompleter.then {
+                self.log("send data: publisher connected...")
+                // wait for publisherDC to open
+                return self.publisherDC.openCompleter
+            }.timeout(.defaultPublisherDataChannelOpen) {
+                // this should not happen since .wait has its own timeouts
+                InternalError.state(message: "ensurePublisherConnected() did not complete")
             }
-
-            return [p1, p2].all(on: .sdk)
         }
 
-        return ensurePublisherConnected().then(on: .sdk) { () -> Void in
+        return ensurePublisherConnected().then(on: queue) { () -> Void in
 
-            let packet = Livekit_DataPacket.with {
-                $0.kind = reliability.toPBType()
-                $0.user = userPacket
-            }
+            // at this point publisher should be .connected and dc should be .open
+            assert(self.publisher?.isConnected ?? false, "publisher is not .connected")
+            assert(self.publisherDC.isOpen, "publisher data channel is not .open")
 
-            let serializedData = try packet.serializedData()
-            let rtcData = Engine.createDataBuffer(data: serializedData)
-
-            guard let channel = self.publisherDataChannel(for: reliability) else {
-                throw InternalError.state(message: "Data channel is nil")
-            }
-
-            guard channel.sendData(rtcData) else {
-                throw EngineError.webRTC(message: "DataChannel.sendData returned false")
-            }
+            // should return true if successful
+            try self.publisherDC.send(userPacket: userPacket, reliability: reliability)
         }
     }
 }
@@ -307,51 +317,34 @@ internal extension Engine {
 
 private extension Engine {
 
-    func publisherDataChannel(for reliability: Reliability) -> RTCDataChannel? {
-        reliability == .reliable ? dcReliablePub : dcLossyPub
-    }
-
-    private func onReceived(dataChannel: RTCDataChannel) {
-
-        log("Server opened data channel \(dataChannel.label)")
-
-        switch dataChannel.label {
-        case RTCDataChannel.labels.reliable:
-            dcReliableSub = dataChannel
-            dcReliableSub?.delegate = self
-        case RTCDataChannel.labels.lossy:
-            dcLossySub = dataChannel
-            dcLossySub?.delegate = self
-        default:
-            log("Unknown data channel label \(dataChannel.label)", .warning)
-        }
-    }
-
     // full connect sequence, doesn't update connection state
     func fullConnectSequence(_ url: String,
                              _ token: String) -> Promise<Void> {
 
+        // this should never happen since Engine is owned by Room
+        guard let room = self.room else { return Promise(EngineError.state(message: "Room is nil")) }
+
         return self.signalClient.connect(url,
                                          token,
-                                         connectOptions: self.connectOptions,
+                                         connectOptions: _state.connectOptions,
                                          reconnectMode: _state.reconnectMode,
-                                         adaptiveStream: roomOptions.adaptiveStream)
-            .then(on: .sdk) {
+                                         adaptiveStream: room._state.options.adaptiveStream)
+            .then(on: queue) {
                 // wait for joinResponse
-                self.signalClient._state.mutate { $0.joinResponseCompleter.wait(on: .sdk,
+                self.signalClient._state.mutate { $0.joinResponseCompleter.wait(on: self.queue,
                                                                                 .defaultJoinResponse,
                                                                                 throw: { SignalClientError.timedOut(message: "failed to receive join response") }) }
-            }.then(on: .sdk) { _ in
+            }.then(on: queue) { _ in
                 self._state.mutate { $0.connectStopwatch.split(label: "signal") }
-            }.then(on: .sdk) { jr in
+            }.then(on: queue) { jr in
                 self.configureTransports(joinResponse: jr)
-            }.then(on: .sdk) {
+            }.then(on: queue) {
                 self.signalClient.resumeResponseQueue()
-            }.then(on: .sdk) {
-                self._state.mutate { $0.primaryTransportConnectedCompleter.wait(on: .sdk,
+            }.then(on: queue) {
+                self._state.mutate { $0.primaryTransportConnectedCompleter.wait(on: self.queue,
                                                                                 .defaultTransportState,
                                                                                 throw: { TransportError.timedOut(message: "primary transport didn't connect") }) }
-            }.then(on: .sdk) {
+            }.then(on: queue) {
                 self._state.mutate { $0.connectStopwatch.split(label: "engine") }
                 self.log("\(self._state.connectStopwatch)")
             }
@@ -380,18 +373,24 @@ private extension Engine {
 
             log("[reconnect] starting QUICK reconnect sequence...")
 
+            // this should never happen since Engine is owned by Room
+            guard let room = self.room else { return Promise(EngineError.state(message: "Room is nil")) }
+
             return self.signalClient.connect(url,
                                              token,
-                                             connectOptions: self.connectOptions,
-                                             reconnectMode: self._state.reconnectMode,
-                                             adaptiveStream: self.roomOptions.adaptiveStream).then(on: .sdk) {
+                                             connectOptions: _state.connectOptions,
+                                             reconnectMode: _state.reconnectMode,
+                                             adaptiveStream: room._state.options.adaptiveStream).then(on: queue) {
 
                                                 self.log("[reconnect] waiting for socket to connect...")
                                                 // Wait for primary transport to connect (if not already)
-                                                self._state.mutate { $0.primaryTransportConnectedCompleter.wait(on: .sdk,
+                                                self._state.mutate { $0.primaryTransportConnectedCompleter.wait(on: self.queue,
                                                                                                                 .defaultTransportState,
                                                                                                                 throw: { TransportError.timedOut(message: "primary transport didn't connect") }) }
-                                             }.then(on: .sdk) { () -> Promise<Void> in
+                                             }.then(on: queue) {
+                                                // send SyncState before offer
+                                                self.sendSyncState()
+                                             }.then(on: queue) { () -> Promise<Void> in
 
                                                 self.subscriber?.restartingIce = true
 
@@ -402,13 +401,13 @@ private extension Engine {
 
                                                 self.log("[reconnect] waiting for publisher to connect...")
 
-                                                return publisher.createAndSendOffer(iceRestart: true).then(on: .sdk) {
-                                                    self._state.mutate { $0.publisherTransportConnectedCompleter.wait(on: .sdk,
+                                                return publisher.createAndSendOffer(iceRestart: true).then(on: self.queue) {
+                                                    self._state.mutate { $0.publisherTransportConnectedCompleter.wait(on: self.queue,
                                                                                                                       .defaultTransportState,
                                                                                                                       throw: { TransportError.timedOut(message: "publisher transport didn't connect") }) }
                                                 }
 
-                                             }.then(on: .sdk) { () -> Promise<Void> in
+                                             }.then(on: queue) { () -> Promise<Void> in
 
                                                 self.log("[reconnect] send queued requests")
                                                 // always check if there are queued requests
@@ -422,7 +421,7 @@ private extension Engine {
 
             log("[reconnect] starting FULL reconnect sequence...")
 
-            return cleanUp(isFullReconnect: true).then(on: .sdk) { () -> Promise<Void> in
+            return cleanUp(isFullReconnect: true).then(on: queue) { () -> Promise<Void> in
 
                 guard let url = self._state.url,
                       let token = self._state.token else {
@@ -433,7 +432,7 @@ private extension Engine {
             }
         }
 
-        return retry(on: .sdk,
+        return retry(on: queue,
                      attempts: 3,
                      delay: .defaultQuickReconnectRetry,
                      condition: { [weak self] triesLeft, _ in
@@ -470,11 +469,11 @@ private extension Engine {
 
                         return mode == .full ? fullReconnectSequence() : quickReconnectSequence()
                      })
-            .then(on: .sdk) {
+            .then(on: queue) {
                 // re-connect sequence successful
                 self.log("[reconnect] sequence completed")
                 self._state.mutate { $0.connectionState = .connected }
-            }.catch(on: .sdk) { error in
+            }.catch(on: queue) { error in
                 self.log("[reconnect] sequence failed with error: \(error)")
                 // finally disconnect if all attempts fail
                 self.cleanUp(reason: .networkError(error))
@@ -487,11 +486,47 @@ private extension Engine {
 
 internal extension Engine {
 
-    func dataChannelInfo() -> [Livekit_DataChannelInfo] {
+    func sendSyncState() -> Promise<Void> {
 
-        [publisherDataChannel(for: .lossy), publisherDataChannel(for: .reliable)]
-            .compactMap { $0 }
-            .map { $0.toLKInfoType() }
+        guard let room = room else {
+            // this should never happen
+            log("Room is nil", .error)
+            return Promise(())
+        }
+
+        guard let subscriber = subscriber,
+              let previousAnswer = subscriber.localDescription else {
+            // No-op
+            return Promise(())
+        }
+
+        let previousOffer = subscriber.remoteDescription
+
+        // 1. autosubscribe on, so subscribed tracks = all tracks - unsub tracks,
+        //    in this case, we send unsub tracks, so server add all tracks to this
+        //    subscribe pc and unsub special tracks from it.
+        // 2. autosubscribe off, we send subscribed tracks.
+
+        let autoSubscribe = _state.connectOptions.autoSubscribe
+        let trackSids = room._state.remoteParticipants.values.flatMap { participant in
+            participant._state.tracks.values
+                .filter { $0.subscribed != autoSubscribe }
+                .map { $0.sid }
+        }
+
+        log("trackSids: \(trackSids)")
+
+        let subscription = Livekit_UpdateSubscription.with {
+            $0.trackSids = trackSids
+            $0.participantTracks = []
+            $0.subscribe = !autoSubscribe
+        }
+
+        return signalClient.sendSyncState(answer: previousAnswer.toPBType(),
+                                          offer: previousOffer?.toPBType(),
+                                          subscription: subscription,
+                                          publishTracks: room._state.localParticipant?.publishedTracksInfo(),
+                                          dataChannels: publisherDC.infos())
     }
 }
 
@@ -523,7 +558,7 @@ extension Engine: SignalClientDelegate {
             return true
         }
 
-        transport.addIceCandidate(iceCandidate).catch(on: .sdk) { error in
+        transport.addIceCandidate(iceCandidate).catch(on: queue) { error in
             self.log("failed to add ice candidate for transport: \(transport), error: \(error)", .error)
         }
 
@@ -537,7 +572,7 @@ extension Engine: SignalClientDelegate {
             return true
         }
 
-        publisher.setRemoteDescription(answer).catch(on: .sdk) { error in
+        publisher.setRemoteDescription(answer).catch(on: queue) { error in
             self.log("failed to set remote description, error: \(error)", .error)
         }
 
@@ -553,15 +588,15 @@ extension Engine: SignalClientDelegate {
             return true
         }
 
-        subscriber.setRemoteDescription(offer).then(on: .sdk) {
+        subscriber.setRemoteDescription(offer).then(on: queue) {
             subscriber.createAnswer()
-        }.then(on: .sdk) { answer in
+        }.then(on: queue) { answer in
             subscriber.setLocalDescription(answer)
-        }.then(on: .sdk) { answer in
+        }.then(on: queue) { answer in
             self.signalClient.sendAnswer(answer: answer)
-        }.then(on: .sdk) {
+        }.then(on: queue) {
             self.log("answer sent to signal")
-        }.catch(on: .sdk) { error in
+        }.catch(on: queue) { error in
             self.log("failed to send answer, error: \(error)", .error)
         }
 
@@ -574,42 +609,6 @@ extension Engine: SignalClientDelegate {
         _state.mutate { $0.token = token }
 
         return true
-    }
-}
-
-// MARK: - RTCDataChannelDelegate
-
-extension Engine: RTCDataChannelDelegate {
-
-    func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
-        // notify new state
-        notify { $0.engine(self, didUpdate: dataChannel, state: dataChannel.readyState) }
-
-        _state.mutate {
-            if dataChannel == dcReliablePub {
-                $0.publisherReliableDCOpenCompleter.set(value: dataChannel.readyState == .open ? () : nil)
-            } else if dataChannel == dcLossyPub {
-                $0.publisherLossyDCOpenCompleter.set(value: dataChannel.readyState == .open ? () : nil)
-            }
-        }
-
-        self.log("dataChannel.\(dataChannel.label) didChangeState : \(dataChannel.channelId)")
-    }
-
-    func dataChannel(_: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-
-        guard let dataPacket = try? Livekit_DataPacket(contiguousBytes: buffer.data) else {
-            log("could not decode data message", .error)
-            return
-        }
-
-        switch dataPacket.value {
-        case .speaker(let update):
-            notify { $0.engine(self, didUpdate: update.speakers) }
-        case .user(let userPacket):
-            notify { $0.engine(self, didReceive: userPacket) }
-        default: return
-        }
     }
 }
 
@@ -646,9 +645,12 @@ extension Engine: TransportDelegate {
 
     private func configureTransports(joinResponse: Livekit_JoinResponse) -> Promise<Void> {
 
-        Promise<Void>(on: .sdk) { () -> Void in
+        Promise<Void>(on: queue) { () -> Void in
 
             self.log("configuring transports...")
+
+            // this should never happen since Engine is owned by Room
+            guard let room = self.room else { throw EngineError.state(message: "Room is nil") }
 
             guard self.subscriber == nil, self.publisher == nil else {
                 self.log("transports already configured")
@@ -660,48 +662,60 @@ extension Engine: TransportDelegate {
             self.log("subscriberPrimary: \(joinResponse.subscriberPrimary)")
 
             // update iceServers from joinResponse
-            self.connectOptions.rtcConfiguration.set(iceServers: joinResponse.iceServers)
+            self._state.mutate {
+                $0.connectOptions.rtcConfiguration.set(iceServers: joinResponse.iceServers)
+                if joinResponse.clientConfiguration.forceRelay == .enabled {
+                    $0.connectOptions.rtcConfiguration.iceTransportPolicy = .relay
+                } else {
+                    $0.connectOptions.rtcConfiguration.iceTransportPolicy = .all
+                }
+            }
 
-            self.subscriber = try Transport(config: self.connectOptions.rtcConfiguration,
-                                            target: .subscriber,
-                                            primary: self.subscriberPrimary,
-                                            delegate: self,
-                                            reportStats: self.roomOptions.reportStats)
-
-            self.publisher = try Transport(config: self.connectOptions.rtcConfiguration,
-                                           target: .publisher,
-                                           primary: !self.subscriberPrimary,
+            let subscriber = try Transport(config: self._state.connectOptions.rtcConfiguration,
+                                           target: .subscriber,
+                                           primary: self.subscriberPrimary,
                                            delegate: self,
-                                           reportStats: self.roomOptions.reportStats)
+                                           reportStats: room._state.options.reportStats)
 
-            self.publisher?.onOffer = { offer in
+            let publisher = try Transport(config: self._state.connectOptions.rtcConfiguration,
+                                          target: .publisher,
+                                          primary: !self.subscriberPrimary,
+                                          delegate: self,
+                                          reportStats: room._state.options.reportStats)
+
+            publisher.onOffer = { offer in
                 self.log("publisher onOffer \(offer.sdp)")
                 return self.signalClient.sendOffer(offer: offer)
             }
 
             // data over pub channel for backwards compatibility
-            self.dcReliablePub = self.publisher?.dataChannel(for: RTCDataChannel.labels.reliable,
-                                                             configuration: Engine.createDataChannelConfiguration(),
-                                                             delegate: self)
 
-            self.dcLossyPub = self.publisher?.dataChannel(for: RTCDataChannel.labels.lossy,
-                                                          configuration: Engine.createDataChannelConfiguration(maxRetransmits: 0),
-                                                          delegate: self)
+            let publisherReliableDC = publisher.dataChannel(for: RTCDataChannel.labels.reliable,
+                                                            configuration: Engine.createDataChannelConfiguration())
 
-            self.log("dataChannel.\(String(describing: self.dcReliablePub?.label)) : \(String(describing: self.dcReliablePub?.channelId))")
-            self.log("dataChannel.\(String(describing: self.dcLossyPub?.label)) : \(String(describing: self.dcLossyPub?.channelId))")
+            let publisherLossyDC = publisher.dataChannel(for: RTCDataChannel.labels.lossy,
+                                                         configuration: Engine.createDataChannelConfiguration(maxRetransmits: 0))
+
+            self.publisherDC.set(reliable: publisherReliableDC)
+            self.publisherDC.set(lossy: publisherLossyDC)
+
+            self.log("dataChannel.\(String(describing: publisherReliableDC?.label)) : \(String(describing: publisherReliableDC?.channelId))")
+            self.log("dataChannel.\(String(describing: publisherLossyDC?.label)) : \(String(describing: publisherLossyDC?.channelId))")
 
             if !self.subscriberPrimary {
                 // lazy negotiation for protocol v3+
                 self.publisherShouldNegotiate()
             }
+
+            self.subscriber = subscriber
+            self.publisher = publisher
         }
     }
 
     func transport(_ transport: Transport, didGenerate iceCandidate: RTCIceCandidate) {
         log("didGenerate iceCandidate")
         signalClient.sendCandidate(candidate: iceCandidate,
-                                   target: transport.target).catch(on: . sdk) { error in
+                                   target: transport.target).catch(on: queue) { error in
                                     self.log("Failed to send candidate, error: \(error)", .error)
                                    }
     }
@@ -727,12 +741,17 @@ extension Engine: TransportDelegate {
     }
 
     func transport(_ transport: Transport, didOpen dataChannel: RTCDataChannel) {
-        log("Did open dataChannel label: \(dataChannel.label)")
-        if subscriberPrimary, transport.target == .subscriber {
-            onReceived(dataChannel: dataChannel)
-        }
 
-        self.log("dataChannel..\(dataChannel.label) : \(dataChannel.channelId)")
+        log("Server opened data channel \(dataChannel.label)(\(dataChannel.readyState))")
+
+        if subscriberPrimary, transport.target == .subscriber {
+
+            switch dataChannel.label {
+            case RTCDataChannel.labels.reliable: subscriberDC.set(reliable: dataChannel)
+            case RTCDataChannel.labels.lossy: subscriberDC.set(lossy: dataChannel)
+            default: log("Unknown data channel label \(dataChannel.label)", .warning)
+            }
+        }
     }
 
     func transportShouldNegotiate(_ transport: Transport) {}
@@ -755,31 +774,28 @@ extension Engine: ConnectivityListenerDelegate {
 
 // MARK: Engine - Factory methods
 
+private let h264BaselineLevel5: RTCVideoCodecInfo = {
+
+    // this should never happen
+    guard let profileLevelId = RTCH264ProfileLevelId(profile: .constrainedBaseline, level: .level5) else {
+        logger.log("failed to generate profileLevelId", .error, type: Engine.self)
+        fatalError("failed to generate profileLevelId")
+    }
+
+    // create a new H264 codec with new profileLevelId
+    return RTCVideoCodecInfo(name: kRTCH264CodecName,
+                             parameters: ["profile-level-id": profileLevelId.hexString,
+                                          "level-asymmetry-allowed": "1",
+                                          "packetization-mode": "1"])
+}()
+
 private extension Array where Element: RTCVideoCodecInfo {
 
     func rewriteCodecsIfNeeded() -> [RTCVideoCodecInfo] {
-        #if os(macOS)
-        // rewrite H264's profileLevelId to 42e032 only for macOS
-        guard let profileLevelId = RTCH264ProfileLevelId(profile: .constrainedBaseline, level: .level5) else {
-            // this should never happen
-            logger.log("failed to generate profileLevelId", .error, type: Engine.self)
-            return self
-        }
-
-        // create a new H264 codec with new profileLevelId
-        let newH264 = RTCVideoCodecInfo(name: kRTCH264CodecName,
-                                        parameters: ["profile-level-id": profileLevelId.hexString,
-                                                     "level-asymmetry-allowed": "1",
-                                                     "packetization-mode": "1"])
-
-        // swap the h264 codec
-        let codecs = map { $0.name == kRTCVideoCodecH264Name ? newH264 : $0 }
+        // rewrite H264's profileLevelId to 42e032
+        let codecs = map { $0.name == kRTCVideoCodecH264Name ? h264BaselineLevel5 : $0 }
         logger.log("supportedCodecs: \(codecs.map({ "\($0.name) - \($0.parameters)" }).joined(separator: ", "))", type: Engine.self)
         return codecs
-        #else
-        // no-op
-        return self
-        #endif
     }
 }
 

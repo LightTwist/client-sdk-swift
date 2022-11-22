@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import Foundation
 import WebRTC
 
 extension RTCConfiguration {
@@ -27,8 +28,7 @@ extension RTCConfiguration {
         result.sdpSemantics = .unifiedPlan
         result.continualGatheringPolicy = .gatherContinually
         result.candidateNetworkPolicy = .all
-        // don't send TCP candidates, they are passive and only server should be sending
-        result.tcpCandidatePolicy = .disabled
+        result.tcpCandidatePolicy = .enabled
         result.iceTransportPolicy = .all
 
         result.iceServers = [ DispatchQueue.webRTC.sync { RTCIceServer(urlStrings: defaultIceServers) } ]

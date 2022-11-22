@@ -17,17 +17,22 @@
 import Foundation
 import WebRTC
 import Promises
+
+#if canImport(ReplayKit)
 import ReplayKit
+#endif
 
 public class CameraCapturer: VideoCapturer {
 
     private let capturer: RTCCameraVideoCapturer
 
+    @objc
     public static func captureDevices() -> [AVCaptureDevice] {
         DispatchQueue.webRTC.sync { RTCCameraVideoCapturer.captureDevices() }
     }
 
     /// Checks whether both front and back capturing devices exist, and can be switched.
+    @objc
     public static func canSwitchPosition() -> Bool {
         let devices = captureDevices()
         return devices.contains(where: { $0.position == .front }) &&
@@ -35,6 +40,7 @@ public class CameraCapturer: VideoCapturer {
     }
 
     /// Current device used for capturing
+    @objc
     public private(set) var device: AVCaptureDevice?
 
     /// Current position of the device
@@ -42,6 +48,7 @@ public class CameraCapturer: VideoCapturer {
         device?.position
     }
 
+    @objc
     public var options: CameraCaptureOptions
 
     init(delegate: RTCVideoCapturerDelegate, options: CameraCaptureOptions) {
@@ -76,7 +83,7 @@ public class CameraCapturer: VideoCapturer {
 
     public override func startCapture() -> Promise<Bool> {
 
-        super.startCapture().then(on: .sdk) { didStart -> Promise<Bool> in
+        super.startCapture().then(on: queue) { didStart -> Promise<Bool> in
 
             guard didStart else {
                 // already started
@@ -97,7 +104,7 @@ public class CameraCapturer: VideoCapturer {
             // list of all formats in order of dimensions size
             let formats = DispatchQueue.webRTC.sync { RTCCameraVideoCapturer.supportedFormats(for: device) }
             // create an array of sorted touples by dimensions size
-            let sortedFormats = formats.map({ (format: $0, dimensions: CMVideoFormatDescriptionGetDimensions($0.formatDescription)) })
+            let sortedFormats = formats.map({ (format: $0, dimensions: Dimensions(from: CMVideoFormatDescriptionGetDimensions($0.formatDescription))) })
                 .sorted { $0.dimensions.area < $1.dimensions.area }
 
             // default to the smallest
@@ -108,9 +115,15 @@ public class CameraCapturer: VideoCapturer {
                let foundFormat = sortedFormats.first(where: { $0.format == preferredFormat }) {
                 selectedFormat = foundFormat
             } else {
-                self.log("formats: \(sortedFormats.map { String(describing: $0.dimensions) }), target: \(self.options.dimensions)")
-                // find format that satisfies preferred dimensions
-                selectedFormat = sortedFormats.first(where: { $0.dimensions.area >= self.options.dimensions.area })
+                self.log("formats: \(sortedFormats.map { String(describing: $0.format.fpsRange()) }), target: \(self.options.dimensions)")
+
+                // find format that satisfies preferred dimensions & fps
+                selectedFormat = sortedFormats.first(where: { $0.dimensions.area >= self.options.dimensions.area && $0.format.fpsRange().contains(self.options.fps) })
+
+                // give up FPS if format still not found
+                if selectedFormat == nil {
+                    selectedFormat = sortedFormats.first(where: { $0.dimensions.area >= self.options.dimensions.area })
+                }
             }
 
             // format should be resolved at this point
@@ -119,7 +132,10 @@ public class CameraCapturer: VideoCapturer {
                 throw TrackError.capturer(message: "Unable to determine format for camera capturer")
             }
 
-            guard let fpsRange = selectedFormat.format.fpsRange() else {
+            let fpsRange = selectedFormat.format.fpsRange()
+
+            // this should never happen
+            guard fpsRange != 0...0 else {
                 self.log("unable to resolve fps range", .error)
                 throw TrackError.capturer(message: "Unable to determine supported fps range for format: \(selectedFormat)")
             }
@@ -170,7 +186,7 @@ public class CameraCapturer: VideoCapturer {
 
     public override func stopCapture() -> Promise<Bool> {
 
-        super.stopCapture().then(on: .sdk) { didStop -> Promise<Bool> in
+        super.stopCapture().then(on: queue) { didStop -> Promise<Bool> in
 
             guard didStop else {
                 // already stopped
@@ -194,12 +210,19 @@ public class CameraCapturer: VideoCapturer {
 
 extension LocalVideoTrack {
 
-    public static func createCameraTrack(name: String = Track.cameraName,
-                                         options: CameraCaptureOptions = CameraCaptureOptions()) -> LocalVideoTrack {
+    @objc
+    public static func createCameraTrack() -> LocalVideoTrack {
+        createCameraTrack(name: nil, options: nil)
+    }
+
+    @objc
+    public static func createCameraTrack(name: String? = nil,
+                                         options: CameraCaptureOptions? = nil) -> LocalVideoTrack {
+
         let videoSource = Engine.createVideoSource(forScreenShare: false)
-        let capturer = CameraCapturer(delegate: videoSource, options: options)
+        let capturer = CameraCapturer(delegate: videoSource, options: options ?? CameraCaptureOptions())
         return LocalVideoTrack(
-            name: name,
+            name: name ?? Track.cameraName,
             source: .camera,
             capturer: capturer,
             videoSource: videoSource
@@ -237,17 +260,10 @@ extension AVFrameRateRange {
 extension AVCaptureDevice.Format {
 
     // computes a ClosedRange of supported FPSs for this format
-    func fpsRange() -> ClosedRange<Int>? {
+    func fpsRange() -> ClosedRange<Int> {
 
-        videoSupportedFrameRateRanges.map { $0.toRange() }.reduce(into: nil as ClosedRange<Int>?) { result, current in
-            // first element
-            guard let previous = result else {
-                result = current
-                return
-            }
-
-            // merge previous element
-            result = merge(range: previous, with: current)
+        videoSupportedFrameRateRanges.map { $0.toRange() }.reduce(into: 0...0) { result, current in
+            result = merge(range: result, with: current)
         }
     }
 }
