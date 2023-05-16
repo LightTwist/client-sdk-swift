@@ -219,42 +219,64 @@ extension Transport {
     func onStatsTimer() {
 
         statsTimer.suspend()
-        pc.stats(for: nil, statsOutputLevel: .standard) { [weak self] reports in
+
+        pc.statistics { [weak self] stats2 in
 
             guard let self = self else { return }
 
             self.statsTimer.resume()
 
-            let tracks = reports
-                .filter { $0.type == TrackStats.keyTypeSSRC }
-                .map { entry -> TrackStats? in
+            let f = stats2.statistics.values.filter { $0.type == "outbound-rtp" }
 
-                    let findPrevious = { () -> TrackStats? in
-                        guard let ssrc = entry.values[TrackStats.keyTypeSSRC],
-                              let previous = self.stats[ssrc] else { return nil }
-                        return previous
-                    }
+            for x in f {
+                do {
+                    let jsonData = try JSONSerialization.data(withJSONObject: x.values, options: [.prettyPrinted, .sortedKeys])
+                    let jsonStr = String(bytes: jsonData, encoding: .utf8)!
 
-                    return TrackStats(from: entry.values, previous: findPrevious())
+                    log("candidate-pair: \(jsonStr)")
+
+                } catch {
+                    //
                 }
-                .compactMap { $0 }
-
-            for track in tracks {
-                // cache
-                self.stats[track.ssrc] = track
             }
-
-            if !tracks.isEmpty {
-                self.notify { $0.transport(self, didGenerate: tracks, target: self.target) }
-            }
-
-            // clean up
-            // for key in self.stats.keys {
-            //    if !tracks.contains(where: { $0.ssrc == key }) {
-            //        self.stats.removeValue(forKey: key)
-            //    }
-            // }
         }
+
+        //        pc.stats(for: nil, statsOutputLevel: .debug) { [weak self] reports in
+        //
+        //            guard let self = self else { return }
+        //
+        //            self.statsTimer.resume()
+        //
+        //            let tracks = reports
+        //                .filter { $0.type == TrackStats.keyTypeSSRC }
+        //                .map { entry -> TrackStats? in
+        //
+        //                    let findPrevious = { () -> TrackStats? in
+        //                        guard let ssrc = entry.values[TrackStats.keyTypeSSRC],
+        //                              let previous = self.stats[ssrc] else { return nil }
+        //                        return previous
+        //                    }
+        //
+        //                    return TrackStats(from: entry.values, previous: findPrevious())
+        //                }
+        //                .compactMap { $0 }
+        //
+        //            for track in tracks {
+        //                // cache
+        //                self.stats[track.ssrc] = track
+        //            }
+        //
+        //            if !tracks.isEmpty {
+        //                self.notify { $0.transport(self, didGenerate: tracks, target: self.target) }
+        //            }
+        //
+        //            // clean up
+        //            // for key in self.stats.keys {
+        //            //    if !tracks.contains(where: { $0.ssrc == key }) {
+        //            //        self.stats.removeValue(forKey: key)
+        //            //    }
+        //            // }
+        //        }
     }
 }
 

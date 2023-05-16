@@ -153,14 +153,23 @@ public class LocalParticipant: Participant {
             track.transceiver = transceiver
 
             // prefer to maintainResolution for screen share
-            if case .screenShareVideo = track.source {
-                self.log("[publish] set degradationPreference to .maintainResolution")
-                let params = transceiver.sender.parameters
-                params.degradationPreference = NSNumber(value: RTCDegradationPreference.maintainResolution.rawValue)
-                // changing params directly doesn't work so we need to update params
-                // and set it back to sender.parameters
-                transceiver.sender.parameters = params
-            }
+            //            if case .screenShareVideo = track.source {
+            //                self.log("[publish] set degradationPreference to .maintainResolution")
+            //                let params = transceiver.sender.parameters
+            //                params.degradationPreference = NSNumber(value: RTCDegradationPreference.maintainResolution.rawValue)
+            //                // changing params directly doesn't work so we need to update params
+            //                // and set it back to sender.parameters
+            //                transceiver.sender.parameters = params
+            //            }
+            let params = transceiver.sender.parameters
+            params.degradationPreference = NSNumber(value: RTCDegradationPreference.disabled.rawValue)
+            transceiver.sender.parameters = params
+
+            // Force VP8
+            //            let capabilities = Engine.videoCapabilities
+            //            transceiver.codecPreferences = [
+            //                capabilities.codecs.first(where: { $0.name == kRTCH264CodecName })
+            //            ].compactMap({ $0 })
 
             self.room.engine.publisherShouldNegotiate()
 

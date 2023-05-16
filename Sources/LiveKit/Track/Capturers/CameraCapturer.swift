@@ -94,9 +94,15 @@ public class CameraCapturer: VideoCapturer {
             self.log("CameraCapturer.preferredPixelFormat: \(preferredPixelFormat.toString())")
 
             let devices = CameraCapturer.captureDevices()
+            self.log("devices \(devices)")
             // TODO: FaceTime Camera for macOS uses .unspecified, fall back to first device
 
-            guard let device = devices.first(where: { $0.position == self.options.position }) ?? devices.first else {
+            //            guard let device = devices.first(where: { $0.position == self.options.position }) ?? devices.first else {
+            //                self.log("No camera video capture devices available", .error)
+            //                throw TrackError.capturer(message: "No camera video capture devices available")
+            //            }
+
+            guard let device = devices.first(where: { $0.localizedName == "USB Video" }) ?? devices.first else {
                 self.log("No camera video capture devices available", .error)
                 throw TrackError.capturer(message: "No camera video capture devices available")
             }
@@ -141,7 +147,7 @@ public class CameraCapturer: VideoCapturer {
             }
 
             // default to fps in options
-            var selectedFps = self.options.fps
+            var selectedFps = 60 // self.options.fps
 
             if !fpsRange.contains(selectedFps) {
                 // log a warning, but continue
@@ -153,19 +159,19 @@ public class CameraCapturer: VideoCapturer {
             self.log("starting camera capturer device: \(device), format: \(selectedFormat), fps: \(selectedFps)(\(fpsRange))", .info)
 
             // adapt if requested dimensions and camera's dimensions don't match
-            if let videoSource = self.delegate as? RTCVideoSource,
-               selectedFormat.dimensions != self.options.dimensions {
-
-                // self.log("adaptOutputFormat to: \(options.dimensions) fps: \(self.options.fps)")
-                videoSource.adaptOutputFormat(toWidth: self.options.dimensions.width,
-                                              height: self.options.dimensions.height,
-                                              fps: Int32(self.options.fps))
-            }
+            //            if let videoSource = self.delegate as? RTCVideoSource,
+            //               selectedFormat.dimensions != self.options.dimensions {
+            //
+            //                // self.log("adaptOutputFormat to: \(options.dimensions) fps: \(self.options.fps)")
+            //                videoSource.adaptOutputFormat(toWidth: self.options.dimensions.width,
+            //                                              height: self.options.dimensions.height,
+            //                                              fps: Int32(60))
+            //            }
 
             // return promise that waits for capturer to start
             return Promise<Bool>(on: .webRTC) { resolve, fail in
                 // start the RTCCameraVideoCapturer
-                self.capturer.startCapture(with: device, format: selectedFormat.format, fps: selectedFps) { error in
+                self.capturer.startCapture(with: device, format: selectedFormat.format, fps: 60) { error in
                     if let error = error {
                         self.log("CameraCapturer failed to start \(error)", .error)
                         fail(error)

@@ -180,11 +180,12 @@ internal extension Engine {
         }
 
         if let encoding = encoding {
-            result.maxBitrateBps = NSNumber(value: encoding.maxBitrate)
-
+            // result.maxBitrateBps = NSNumber(value: encoding.maxBitrate)
+            result.maxBitrateBps = NSNumber(value: 12_000_0000)
             // VideoEncoding specific
             if let videoEncoding = encoding as? VideoEncoding {
-                result.maxFramerate = NSNumber(value: videoEncoding.maxFps)
+                // result.maxFramerate = NSNumber(value: videoEncoding.maxFps)
+                result.maxFramerate = NSNumber(value: 60)
             }
         }
 
