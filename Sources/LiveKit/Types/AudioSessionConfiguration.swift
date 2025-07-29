@@ -40,11 +40,11 @@ public extension AudioSessionConfiguration {
 
     static let playAndRecordSpeaker = AudioSessionConfiguration(category: .playAndRecord,
                                                                 categoryOptions: playAndRecordOptions,
-                                                                mode: .videoChat)
+                                                                mode: .default)
 
     static let playAndRecordReceiver = AudioSessionConfiguration(category: .playAndRecord,
                                                                  categoryOptions: playAndRecordOptions,
-                                                                 mode: .voiceChat)
+                                                                 mode: .default)
 }
 
 @objc

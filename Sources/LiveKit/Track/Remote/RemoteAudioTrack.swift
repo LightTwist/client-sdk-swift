@@ -29,7 +29,13 @@ public class RemoteAudioTrack: Track, RemoteTrack, AudioTrack, @unchecked Sendab
         }
         set {
             guard let audioTrack = mediaTrack as? LKRTCAudioTrack else { return }
-            audioTrack.source.volume = newValue * 10
+            // Defer volume setting to break out of current call stack and avoid threading crash
+            // WebRTC's OnSetVolume must be called on the correct signaling thread context
+            DispatchQueue.main.async {
+                DispatchQueue.liveKitWebRTC.async {
+                    audioTrack.source.volume = newValue * 10
+                }
+            }
         }
     }
 

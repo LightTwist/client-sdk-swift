@@ -18,7 +18,7 @@ import AVFAudio
 
 internal import LiveKitWebRTC
 
-public let AudioEngineInputMixerNodeKey = kLKRTCAudioEngineInputMixerNodeKey
+public let AudioEngineInputMixerNodeKey = kRTCAudioEngineInputMixerNodeKey
 
 /// Do not retain the engine object.
 public protocol AudioEngineObserver: NextInvokable, Sendable {

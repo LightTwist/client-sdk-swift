@@ -86,41 +86,31 @@ public class AudioSessionEngineObserver: AudioEngineObserver, Loggable, @uncheck
     }
 
     @Sendable func configure(oldState: State, newState: State) {
+        print("🎧 [LiveKit] Audio engine state change - old: \(oldState), new: \(newState)")
+        print("🎧 [LiveKit] Call stack:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
+        
         let session = LKRTCAudioSession.sharedInstance()
-
-        session.lockForConfiguration()
-        defer {
-            session.unlockForConfiguration()
-            log("AudioSession activationCount: \(session.activationCount), webRTCSessionCount: \(session.webRTCSessionCount)")
-        }
-
-        if (!newState.isPlayoutEnabled && !newState.isRecordingEnabled) && (oldState.isPlayoutEnabled || oldState.isRecordingEnabled) {
-            do {
-                log("AudioSession deactivating...")
-                try session.setActive(false)
-            } catch {
-                log("AudioSession failed to deactivate with error: \(error)", .error)
-            }
-        } else if newState.isRecordingEnabled || newState.isPlayoutEnabled {
+        print("🎧 [LiveKit] Current route - inputs: \(session.currentRoute.inputs)")
+        
+        do {
+            // Only deactivate if no USB device
+            try session.setActive(false)
+            print("🎧 [LiveKit] Deactivated audio session")
+            
             // Configure and activate the session with the appropriate category
             let playAndRecord: AudioSessionConfiguration = newState.isSpeakerOutputPreferred ? .playAndRecordSpeaker : .playAndRecordReceiver
             let config: AudioSessionConfiguration = newState.isRecordingEnabled ? playAndRecord : .playback
-
-            do {
-                log("AudioSession configuring category to: \(config.category)")
-                try session.setConfiguration(config.toRTCType())
-            } catch {
-                log("AudioSession failed to configure with error: \(error)", .error)
-            }
-
-            if !oldState.isPlayoutEnabled, !oldState.isRecordingEnabled {
-                do {
-                    log("AudioSession activating...")
-                    try session.setActive(true)
-                } catch {
-                    log("AudioSession failed to activate AudioSession with error: \(error)", .error)
-                }
-            }
+            
+            print("🎧 [LiveKit] Setting configuration - category: \(config.category), mode: \(config.mode), options: \(config.categoryOptions)")
+            try session.setConfiguration(config.toRTCType())
+            
+            try session.setActive(true)
+            print("🎧 [LiveKit] Activated audio session with new configuration")
+            
+            // Log final state
+            print("🎧 [LiveKit] Final route - inputs: \(session.currentRoute.inputs)")
+        } catch {
+            print("🎧 [LiveKit] Failed to configure audio session: \(error)")
         }
     }
 
@@ -144,6 +134,83 @@ public class AudioSessionEngineObserver: AudioEngineObserver, Loggable, @uncheck
         }
 
         return nextResult ?? 0
+    }
+
+    @objc private func handleRouteChange(_ notification: Notification) {
+        print("🎧 [LiveKit] Audio route change notification")
+        print("🎧 [LiveKit] Call stack:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
+        
+        let audioSession = AVAudioSession.sharedInstance()
+        print("🎧 [LiveKit] Current route - inputs: \(audioSession.currentRoute.inputs)")
+        print("🎧 [LiveKit] Current route - outputs: \(audioSession.currentRoute.outputs)")
+        print("🎧 [LiveKit] Available inputs: \(audioSession.availableInputs ?? [])")
+        print("🎧 [LiveKit] Current category: \(audioSession.category), mode: \(audioSession.mode)")
+        
+        // Log all audio session properties
+        print("🎧 [LiveKit] Sample rate: \(audioSession.sampleRate)")
+        print("🎧 [LiveKit] I/O buffer duration: \(audioSession.ioBufferDuration)")
+        print("🎧 [LiveKit] Input latency: \(audioSession.inputLatency)")
+        print("🎧 [LiveKit] Output latency: \(audioSession.outputLatency)")
+        print("🎧 [LiveKit] Input number of channels: \(audioSession.inputNumberOfChannels)")
+        print("🎧 [LiveKit] Output number of channels: \(audioSession.outputNumberOfChannels)")
+    }
+
+    private func describeRouteChangeReason(_ reason: AVAudioSession.RouteChangeReason) -> String {
+        switch reason {
+        case .unknown:
+            return "Unknown"
+        case .newDeviceAvailable:
+            return "New Device Available"
+        case .oldDeviceUnavailable:
+            return "Old Device Unavailable"
+        case .categoryChange:
+            return "Category Change"
+        case .override:
+            return "Override"
+        case .wakeFromSleep:
+            return "Wake From Sleep"
+        case .noSuitableRouteForCategory:
+            return "No Suitable Route For Category"
+        case .routeConfigurationChange:
+            return "Route Configuration Change"
+        @unknown default:
+            return "Unknown (\(reason.rawValue))"
+        }
+    }
+
+    @objc private func handleInterruption(_ notification: Notification) {
+        print("🎧 [LiveKit] Audio session interruption")
+        print("🎧 [LiveKit] Call stack:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
+        
+        let audioSession = AVAudioSession.sharedInstance()
+        print("🎧 [LiveKit] Current route - inputs: \(audioSession.currentRoute.inputs)")
+        print("🎧 [LiveKit] Available inputs: \(audioSession.availableInputs ?? [])")
+    }
+
+    private func describeInterruptionOptions(_ options: AVAudioSession.InterruptionOptions) -> String {
+        var descriptions: [String] = []
+        if options.contains(.shouldResume) {
+            descriptions.append("Should Resume")
+        }
+        return descriptions.isEmpty ? "None" : descriptions.joined(separator: ", ")
+    }
+
+    @objc private func handleMediaServicesWereLost(_ notification: Notification) {
+        print("🎧 [LiveKit] ⚠️ Media services were lost!")
+        print("🎧 [LiveKit] Call stack:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
+        
+        let audioSession = AVAudioSession.sharedInstance()
+        print("🎧 [LiveKit] Current route - inputs: \(audioSession.currentRoute.inputs)")
+        print("🎧 [LiveKit] Available inputs: \(audioSession.availableInputs ?? [])")
+    }
+
+    @objc private func handleMediaServicesWereReset(_ notification: Notification) {
+        print("🎧 [LiveKit] Media services were reset")
+        print("🎧 [LiveKit] Call stack:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
+        
+        let audioSession = AVAudioSession.sharedInstance()
+        print("🎧 [LiveKit] Current route - inputs: \(audioSession.currentRoute.inputs)")
+        print("🎧 [LiveKit] Available inputs: \(audioSession.availableInputs ?? [])")
     }
 }
 

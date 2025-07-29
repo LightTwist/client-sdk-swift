@@ -19,8 +19,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // LK-Prefixed Dynamic WebRTC XCFramework
-        .package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "125.6422.33"),
+        // LOCAL WebRTC XCFramework (with USB device protection)
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.29.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.2"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
@@ -34,10 +33,14 @@ let package = Package(
             name: "LKObjCHelpers",
             publicHeadersPath: "include"
         ),
+        .binaryTarget(
+            name: "LiveKitWebRTC",
+            path: "Frameworks/LiveKitWebRTC.xcframework"
+        ),
         .target(
             name: "LiveKit",
             dependencies: [
-                .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
+                "LiveKitWebRTC",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "DequeModule", package: "swift-collections"),
                 .product(name: "OrderedCollections", package: "swift-collections"),

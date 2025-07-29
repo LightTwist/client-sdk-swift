@@ -166,11 +166,7 @@ public class AudioManager: Loggable {
     }
 
     public var inputDevices: [AudioDevice] {
-        #if os(macOS)
         RTC.audioDeviceModule.inputDevices.map { AudioDevice(ioDevice: $0) }
-        #else
-        []
-        #endif
     }
 
     public var outputDevice: AudioDevice {
@@ -190,22 +186,22 @@ public class AudioManager: Loggable {
 
     public var inputDevice: AudioDevice {
         get {
-            #if os(macOS)
             AudioDevice(ioDevice: RTC.audioDeviceModule.inputDevice)
-            #else
-            AudioDevice(ioDevice: LKRTCIODevice.defaultDevice(with: .input))
-            #endif
         }
         set {
-            #if os(macOS)
             RTC.audioDeviceModule.inputDevice = newValue._ioDevice
-            #endif
         }
     }
 
     public var onDeviceUpdate: OnDevicesDidUpdate? {
         get { _state.onDevicesDidUpdate }
         set { _state.mutate { $0.onDevicesDidUpdate = newValue } }
+    }
+
+    /// Attempts to set the input device and returns whether the operation was successful.
+    /// This is preferred over setting `inputDevice` directly as it provides error feedback.
+    public func trySetInputDevice(_ device: AudioDevice?) -> Bool {
+        return RTC.audioDeviceModule.trySetInputDevice(device?._ioDevice)
     }
 
     /// Detect voice activity even if the mic is muted.

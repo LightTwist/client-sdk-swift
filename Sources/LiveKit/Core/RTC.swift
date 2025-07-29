@@ -21,7 +21,7 @@ internal import LiveKitWebRTC
 private extension Array where Element: LKRTCVideoCodecInfo {
     func rewriteCodecsIfNeeded() -> [LKRTCVideoCodecInfo] {
         // rewrite H264's profileLevelId to 42e032
-        let codecs = map { $0.name == kLKRTCVideoCodecH264Name ? RTC.h264BaselineLevel5CodecInfo : $0 }
+        let codecs = map { $0.name == kRTCVideoCodecH264Name ? RTC.h264BaselineLevel5CodecInfo : $0 }
         // logger.log("supportedCodecs: \(codecs.map({ "\($0.name) - \($0.parameters)" }).joined(separator: ", "))", type: Engine.self)
         return codecs
     }
@@ -62,7 +62,7 @@ actor RTC {
         }
 
         // create a new H264 codec with new profileLevelId
-        return LKRTCVideoCodecInfo(name: kLKRTCH264CodecName,
+        return LKRTCVideoCodecInfo(name: kRTCH264CodecName,
                                    parameters: ["profile-level-id": profileLevelId.hexString,
                                                 "level-asymmetry-allowed": "1",
                                                 "packetization-mode": "1"])
@@ -81,8 +81,8 @@ actor RTC {
 
     static let audioProcessingModule: LKRTCDefaultAudioProcessingModule = .init()
 
-    static let videoSenderCapabilities = peerConnectionFactory.rtpSenderCapabilities(forKind: kLKRTCMediaStreamTrackKindVideo)
-    static let audioSenderCapabilities = peerConnectionFactory.rtpSenderCapabilities(forKind: kLKRTCMediaStreamTrackKindAudio)
+    static let videoSenderCapabilities = peerConnectionFactory.rtpSenderCapabilities(forKind: kRTCMediaStreamTrackKindVideo)
+    static let audioSenderCapabilities = peerConnectionFactory.rtpSenderCapabilities(forKind: kRTCMediaStreamTrackKindAudio)
 
     static let peerConnectionFactory: LKRTCPeerConnectionFactory = {
         // Update pc init lock
@@ -94,6 +94,14 @@ actor RTC {
         logger.log("Initializing SSL...", type: Room.self)
 
         LKRTCInitializeSSL()
+
+        #if os(iOS) || os(visionOS) || os(tvOS)
+        // Override WebRTC's default audio session configuration to use USB-friendly settings
+        // This prevents USB microphones from disappearing when WebRTC configures the audio session
+        let usbFriendlyConfig = AudioSessionConfiguration.playAndRecordSpeaker.toRTCType()
+        LKRTCAudioSessionConfiguration.setWebRTC(usbFriendlyConfig)
+        logger.log("Set USB-friendly audio session configuration for WebRTC", type: Room.self)
+        #endif
 
         logger.log("Initializing PeerConnectionFactory...", type: Room.self)
 
